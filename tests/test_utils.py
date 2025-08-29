@@ -1,209 +1,87 @@
 from datetime import datetime
-from typing import Any, Dict, List
-from unittest.mock import MagicMock, patch
+from typing import Any
+from unittest.mock import MagicMock
 
 import pandas as pd
-import requests
-from _pytest.capture import CaptureFixture
+import pytest
+from freezegun import freeze_time
 
-from src.utils import (
-    analyzes_expenses,
-    external_api_currency,
-    external_api_stock,
-    get_filtered_transactions,
-    get_greeting,
-    get_read_excel,
-    top_transactions,
+from src.utils import (get_currency_rates, get_data, get_dict_transaction, get_expenses_cards, get_stock_price,
+                       greeting_by_time_of_day, top_transaction)
+
+# Тестовые данные
+mock_transactions = pd.DataFrame(
+    {
+        "Дата операции": ["01.01.2021 12:00:00", "02.01.2021 12:00:00", "03.01.2021 12:00:00"],
+        "Сумма платежа": [-1000, -500, -200],
+        "Номер карты": ["1234567812345678", "8765432187654321", "1234567812345678"],
+        "Категория": ["Еда", "Топливо", "Развлечения"],
+        "Описание": ["Обед", "Заправка", "Кино"],
+    }
 )
 
-
-@patch("pandas.read_excel")
-def test_get_read_excel(mock_read_excel: MagicMock) -> None:
-    """Тестируем чтение EXCEL-файла"""
-    transaction_dict = {"key1": ["value1", "value2"], "key2": ["value1", "value2"]}
-    mock_read_excel.return_value = pd.DataFrame(transaction_dict)
-    assert get_read_excel("test.xlsx") == [{"key1": "value1", "key2": "value1"}, {"key1": "value2", "key2": "value2"}]
-    mock_read_excel.assert_called_once()
+# Преобразуем даты в datetime
+mock_transactions["Дата операции"] = pd.to_datetime(mock_transactions["Дата операции"], dayfirst=True)
 
 
-def test_get_read_excel_empty() -> None:
-    """Проверяем работу функции, если файл пустой"""
-    result = get_read_excel("data/orders_empty.xlsx")
-    assert result == []
+@freeze_time("2022-01-01 08:00:00")
+def test_greeting_by_time_of_day() -> None:
+    assert greeting_by_time_of_day() == "Доброе утро"
 
 
-def test_get_read_excel_not_found() -> None:
-    """Проверяем работу функции, если файл не найден"""
-    result = get_read_excel("data/orders_empty1.xlsx")
-    assert result == []
+def test_get_data() -> None:
+    start_date, fin_date = get_data("01.01.2021 12:00:00")
+    assert start_date == datetime(2021, 1, 1, 0, 0, 0)
+    assert fin_date == datetime(2021, 1, 1, 12, 0, 0)
+
+    with pytest.raises(ValueError):
+        get_data("Некорректная дата")
 
 
-@patch("requests.get")
-def test_external_api_currency(mock_get: MagicMock) -> None:
-    """Проверяем результат обработки запроса к внешнему API для получения текущего курса валют"""
-    mock_response = mock_get.return_value
-    mock_get.return_value.status_code = 200
-    mock_response.json.side_effect = [{"info": {"rate": 103.123532}}, {"info": {"rate": 106.217105}}]
-    assert external_api_currency() == [{"currency": "USD", "rate": 103.12}, {"currency": "EUR", "rate": 106.22}]
-    assert mock_get.call_count == 2
+def test_top_transaction() -> None:
+    result = top_transaction(mock_transactions)
+    assert len(result) == 3  # Ожидаем 3 транзакции
+    assert result[0]["amount"] == -200  # Проверяем, что первая транзакция с самой высокой суммой
 
 
-@patch("requests.get")
-def test_external_api_currency_invalid(mock_get: MagicMock) -> None:
-    """Проверка некорректного завершения обработки запроса к внешнему API для получения текущего курса валют"""
-    mock_response = mock_get.return_value
-    mock_get.return_value.status_code = 400
-    mock_response.json.side_effect = []
-    assert external_api_currency() == []
-    assert mock_get.call_count == 2
+def test_get_expenses_cards() -> None:
+    result = get_expenses_cards(mock_transactions)
+    assert len(result) == 2  # Ожидаем 2 уникальные карты
+    assert result[0]["last_digits"] == "5678"  # Проверяем последние 4 цифры первой карты
 
 
-@patch("requests.get")
-def test_external_api_currency_request_exception(mock_get: MagicMock) -> None:
-    """Проверяем обработку исключения requests.exceptions.RequestException"""
-    mock_get.side_effect = requests.exceptions.RequestException("Ошибка запроса")
-    result = external_api_currency()
-    assert result == []
-    assert mock_get.call_count > 0
+@pytest.mark.usefixtures("mocker")
+def test_get_dict_transaction(mocker: Any) -> None:
+    # Используем mock для pd.read_excel
+    mocker.patch("src.utils.pd.read_excel", return_value=mock_transactions)
+    mocker.patch("os.path.isfile", return_value=True)  # Мокируем os.path.isfile
+    result = get_dict_transaction("fake_path.xlsx")  # Это не вызовет ошибку
+    assert len(result) == 3  # Ожидаем 3 транзакции
 
 
-@patch("src.utils.requests.get")
-def test_external_api_stock(mock_get: MagicMock) -> None:
-    """Проверяем результат обработки запроса к внешнему API для получения цен на акции"""
-    mock_response = mock_get.return_value
-    mock_get.return_value.status_code = 200
-    mock_response.json.side_effect = [
-        {"results": [{"c": 150.12}]},
-        {"results": [{"c": 3173.18}]},
-        {"results": [{"c": 2742.39}]},
-        {"results": [{"c": 296.71}]},
-        {"results": [{"c": 1007.08}]},
-    ]
-    assert external_api_stock() == [
-        {"stock": "AAPL", "price": 150.12},
-        {"stock": "AMZN", "price": 3173.18},
-        {"stock": "GOOGL", "price": 2742.39},
-        {"stock": "MSFT", "price": 296.71},
-        {"stock": "TSLA", "price": 1007.08},
-    ]
-    assert mock_get.call_count == 5
+@pytest.mark.usefixtures("mocker")
+def test_get_currency_rates(mocker: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Устанавливаем переменную окружения API_KEY
+    monkeypatch.setenv("API_KEY", "fake_api_key")
 
-
-@patch("src.utils.requests.get")
-def test_external_api_stock_invalid(mock_get: MagicMock) -> None:
-    """Проверка некорректного завершения обработки запроса к внешнему API для получения цен на акции"""
-    mock_response = mock_get.return_value
-    mock_get.return_value.status_code = 400
-    mock_response.json.side_effect = []
-    assert external_api_stock() == []
-    assert mock_get.call_count == 5
-
-
-@patch("src.utils.requests.get")
-def test_external_api_stock_request_exception(mock_get: MagicMock) -> None:
-    """Проверяем обработку исключения requests.exceptions.RequestException"""
-    mock_get.side_effect = requests.exceptions.RequestException("Ошибка запроса")
-    result = external_api_stock()
-    assert result == []
-    assert mock_get.call_count > 0
-
-
-@patch("src.utils.datetime")
-def test_get_greeting_(mock_datetime: MagicMock) -> None:
-    """Тестируем функцию приветствия в зависимости от времени суток"""
-    mock_datetime.now.return_value = datetime(2021, 12, 30, 4, 20, 55)
-    assert get_greeting(mock_datetime.now()) == "Доброй ночи"
-
-
-@patch("src.utils.datetime")
-def test_get_greeting_1(mock_datetime: MagicMock) -> None:
-    """Тестируем функцию приветствия в зависимости от времени суток"""
-    mock_datetime.now.return_value = datetime(2021, 12, 30, 11, 59, 55)
-    assert get_greeting(mock_datetime.now()) == "Доброе утро"
-
-
-@patch("src.utils.datetime")
-def test_get_greeting_2(mock_datetime: MagicMock) -> None:
-    """Тестируем функцию приветствия в зависимости от времени суток"""
-    mock_datetime.now.return_value = datetime(2021, 12, 30, 14, 20, 55)
-    assert get_greeting(mock_datetime.now()) == "Добрый день"
-
-
-@patch("src.utils.datetime")
-def test_get_greeting_3(mock_datetime: MagicMock) -> None:
-    """Тестируем функцию приветствия в зависимости от времени суток"""
-    mock_datetime.now.return_value = datetime(2021, 12, 30, 23, 20, 55)
-    assert get_greeting(mock_datetime.now()) == "Добрый вечер"
-
-
-def test_analyzes_expenses(test_transactions: List[Dict[str, Any]]) -> None:
-    """Тестируем поведение функции, которая возвращает общую сумму расходов и размер кэшбэка
-    по каждой карте за указанный период"""
-    result = analyzes_expenses(pd.DataFrame(test_transactions))
-    assert result == [{"last_digits": "7197", "total_spent": 224.89, "cashback": 2.0}]
-
-
-def test_analyzes_expenses_exception(test_transactions: List[Dict[str, Any]]) -> None:
-    """Тестируем отработку исключения"""
-    with patch("pandas.DataFrame.groupby") as mock_groupby:
-        mock_groupby.side_effect = Exception("Ошибка при группировке")
-        result = analyzes_expenses(pd.DataFrame(test_transactions))
-        assert result == []
-
-
-def test_get_filtered_transactions(test_transactions: List[Dict[str, Any]]) -> None:
-    """Тестируем результативное поведение функции, которая фильтрует полученный DataFrame по дате и статусу операции
-    и принимает во внимание только расходы"""
-    date_obj = datetime.strptime("2021-12-31 00:00:00", "%Y-%m-%d %H:%M:%S")
-    start_date = date_obj.replace(day=1)
-    result = get_filtered_transactions(pd.DataFrame(test_transactions), date_obj, start_date)
-    expected_df = pd.DataFrame(test_transactions)
-    expected_df["Дата операции"] = pd.to_datetime(expected_df["Дата операции"], dayfirst=True).dt.normalize()
-    pd.testing.assert_frame_equal(result, expected_df)
-
-
-def test_get_filtered_transactions_empty(capsys: CaptureFixture[str], test_transactions: List[Dict[str, Any]]) -> None:
-    """Тестируем нулевой результат функции, которая фильтрует полученный DataFrame по дате и статусу операции
-    и принимает во внимание только расходы"""
-    date_obj = datetime.strptime("2024-12-31 00:00:00", "%Y-%m-%d %H:%M:%S")
-    start_date = date_obj.replace(day=1)
-    result = get_filtered_transactions(pd.DataFrame(test_transactions), date_obj, start_date)
-    captured = capsys.readouterr()
-    assert captured.out == "Нет расходов за выбранный период.\n"
-    assert result.empty
-
-
-def test_get_filtered_transactions_invalid_data() -> None:
-    """Тестируем поведение функции при исключении"""
-    invalid_transactions = pd.DataFrame(
-        {"Дата операции": ["нет данных"], "Номер карты": ["1234"], "Статус": ["OK"], "Сумма операции": [-100]}
+    mocker.patch(
+        "src.utils.requests.get",
+        return_value=MagicMock(status_code=200, json=lambda: {"rates": {"RUB": 73.21, "EUR": 87.08, "USD": 1.0}}),
     )
-    date_obj = datetime.strptime("2024-12-31 00:00:00", "%Y-%m-%d %H:%M:%S")
-    start_date = date_obj.replace(day=1)
-    result = get_filtered_transactions(invalid_transactions, date_obj, start_date)
-    assert result.empty
+    result = get_currency_rates(["EUR", "USD"])
+    assert len(result) == 2  # Ожидаем 2 валюты
 
 
-def test_top_transactions(test_transactions: List[Dict[str, Any]]) -> None:
-    """Тестируем функцию, которая возвращает список словарей с Топ-5 транзакциями по сумме платежа."""
-    expected_df = pd.DataFrame(test_transactions)
-    expected_df["Дата операции"] = pd.to_datetime(expected_df["Дата операции"], dayfirst=True).dt.normalize()
-    result = top_transactions(expected_df)
-    assert result == [
-        {"date": "31.12.2021", "amount": 160.89, "category": "Супермаркеты", "description": "Колхоз"},
-        {"date": "31.12.2021", "amount": 64.0, "category": "Ж/д билеты", "description": "Колхоз"},
-    ]
-
-
-def test_top_transactions_invalid_data() -> None:
-    """Тестируем поведение функции при исключении"""
-    invalid_transactions = pd.DataFrame(
-        {
-            "Дата операции": ["нет данных"],
-            "Категория": ["Ж/д билеты"],
-            "Описание": ["Колхоз"],
-            "Сумма операции": [-100],
-        }
+@pytest.mark.usefixtures("mocker")
+def test_get_stock_price(mocker: Any) -> None:
+    mocker.patch(
+        "src.utils.requests.get",
+        return_value=MagicMock(status_code=200, json=lambda: {"Global Quote": {"05. price": "150.12"}}),
     )
-    result = top_transactions(invalid_transactions)
-    assert result == []
+    result = get_stock_price(["AAPL"])
+    assert len(result) == 1  # Ожидаем 1 акцию
+    assert result[0]["stock"] == "AAPL"  # Проверяем, что акция - это AAPL
+
+
+if __name__ == "__main__":
+    pytest.main()

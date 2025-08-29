@@ -2,66 +2,116 @@ import json
 import logging
 import os
 from datetime import datetime
+from typing import Any, Dict, List, Union
 
 import pandas as pd
 
-from src.utils import (
-    analyzes_expenses,
-    external_api_currency,
-    external_api_stock,
-    get_filtered_transactions,
-    top_transactions,
-)
+from src.config import file_path, load_user_currencies, load_user_stocks
+from src.utils import get_currency_rates, get_expenses_cards, get_stock_price, greeting_by_time_of_day, top_transaction
 
-base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-path_log_file = os.path.join(base_dir, "logs", "views.log")
+# Настройка логирования
+log_directory = "../logs"
 
-logger = logging.getLogger(__name__)
-file_handler = logging.FileHandler(path_log_file, "w", encoding="utf-8")
-file_formatter = logging.Formatter("%(asctime)s %(levelname)s: %(message)s")
-file_handler.setFormatter(file_formatter)
-logger.addHandler(file_handler)
+# Проверка на существование директории для логов
+if not os.path.exists(log_directory):
+    os.makedirs(log_directory)
+
+logger = logging.getLogger("logs")
 logger.setLevel(logging.INFO)
 
+# Проверка на наличие обработчиков, чтобы избежать дублирования
+if not logger.hasHandlers():
+    file_handler = logging.FileHandler(os.path.join(log_directory, "views.log"), encoding="utf-8")
+    file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s: %(message)s")
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
 
-def home_page(df_xls: pd.DataFrame, data: str, greeting: str) -> str:
-    """Функция создает JSON-ответ на основе переданной даты и файла с транзакциями:
-    1)приветствие; 2) общая сумма расходов и кешбэк по каждой карте; 3) топ-5 транзакций по сумме платежа;
-    4) курс валют; 5) стоимость акций из S&P500."""
 
-    logger.info(f"Функция {__name__} начала работу")
+def form_main_page_info(some_param: Union[str, dict], return_json: bool = False) -> Union[str, Dict[str, Any]]:
+    """Принимает дату в формате строки YYYY-MM-DD HH:MM:SS и возвращает общую информацию в формате
+    json о банковских транзакциях за период с начала месяца до этой даты"""
+    logger.info(f"Запуск функции main с параметром: {some_param}")
+
+    currencies = load_user_currencies()  # Загружаем валюты
+    stocks = load_user_stocks()  # Загружаем акции
+    date_obj = None
+
+    # Проверка типа входного аргумента
+    if isinstance(some_param, str):
+        # Обработка строки
+        try:
+            date_obj = datetime.strptime(some_param, "%Y-%m-%d %H:%M:%S")
+        except ValueError as e:
+            logger.error(f"Ошибка преобразования даты: {e}")
+            return json.dumps({"error": "Некорректный формат даты."}, ensure_ascii=False)
+    elif isinstance(some_param, dict) and "date" in some_param:
+        # Обработка JSON объекта
+        try:
+            date_obj = datetime.strptime(some_param["date"], "%Y-%m-%d %H:%M:%S")
+        except ValueError as e:
+            logger.error(f"Ошибка преобразования даты: {e}")
+            return json.dumps({"error": "Некорректный формат даты."}, ensure_ascii=False)
+    else:
+        return json.dumps({"error": "Некорректный тип параметра. Ожидается строка или JSON."}, ensure_ascii=False)
+
     try:
-        date_obj = datetime.strptime(data, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        logger.error("Введен неверный формат даты.")
-        raise ValueError("Неверный формат даты и времени. Используйте YYYY-MM-DD HH:MM:SS")
-    try:
-        logger.info("Формируем JSON-ответ с заданными данными")
-        start_date = date_obj.replace(day=1)
-        filtered_transaction = get_filtered_transactions(df_xls, date_obj, start_date)
-        if not filtered_transaction.empty:
-            expenses = analyzes_expenses(filtered_transaction)
-            df_top_transactions = top_transactions(filtered_transaction)
-        else:
-            expenses = []
-            df_top_transactions = []
-        currency_rates = external_api_currency()
-        stock_prices = external_api_stock()
-        response = {
-            "greeting": greeting,
-            "cards": expenses,
-            "top_transactions": df_top_transactions,
-            "currency_rates": currency_rates,
-            "stock_prices": stock_prices,
-        }
-        print(json.dumps(response, ensure_ascii=False, indent=4))
-        return json.dumps(response, ensure_ascii=False, indent=4)
-    except Exception as e:
-        logger.error(f"Возникла ошибка {e}", exc_info=True)
-        print(type(e).__name__)
-        return json.dumps(
-            {"Error": "Неверный формат даты и времени. Используйте YYYY-MM-DD HH:MM:SS."}, ensure_ascii=False
+        data = pd.read_excel(file_path)
+        # Преобразование DataFrame
+        data_df = pd.DataFrame(data)
+        logger.info(f"Исходный DataFrame: {data_df}")  # контроль
+        data_df["datetime"] = pd.to_datetime(
+            data_df["Дата операции"], format="%d.%m.%Y %H:%M:%S", dayfirst=True, errors="coerce"
         )
-    finally:
-        logger.info(f"Функция {__name__} завершила работу")
+    except Exception as e:
+        logger.error(f"Ошибка при чтении файла: {e}")
+        return json.dumps({"error": "Не удалось прочитать данные."}, ensure_ascii=False)
 
+    # Определяем диапазон дат
+    start_date = date_obj.replace(day=1, hour=0, minute=0, second=0)
+    fin_date = date_obj
+    logger.debug(f"Диапазон дат: с {start_date} по {fin_date}")  # контроль
+
+    json_data = data_df[data_df["datetime"].between(start_date, fin_date)]
+    logger.info(f"Количество транзакций за период: {len(json_data)}")
+
+    # Получаем приветствие
+    greeting = greeting_by_time_of_day()
+
+    # Формируем итоговый словарь
+    agg_dict = {
+        "greeting": greeting,
+        "cards": get_expenses_cards(json_data) if not json_data.empty else [],
+        "top_transactions": top_transaction(json_data) if not json_data.empty else [],
+        "currency_rates": get_currency_rates(currencies),
+        "stock_prices": get_stock_price(stocks),
+    }
+    logger.info(f"Filtered transactions: {json_data}")
+    logger.info(f"Agg dict before serialization: {agg_dict}")
+
+    # Если нет транзакций, добавляем сообщение об ошибке
+    if json_data.empty:
+        logger.warning("Нет транзакций за указанный период.")
+        agg_dict["error"] = "Нет транзакций за указанный период."
+
+    return json.dumps(agg_dict, ensure_ascii=False, indent=2) if return_json else agg_dict
+
+
+def create_json_response(expenses_cards: List[Dict], top_transactions: List[Dict]) -> str:
+    """
+    Формирует JSON-ответ на основе карт расходов и топ-транзакций.
+
+    :param expenses_cards: Список словарей с данными о расходах по картам.
+    :param top_transactions: Список словарей с данными о топ-транзакциях.
+    :return: JSON-строка с ответом.
+    """
+    response = {"expenses_cards": expenses_cards, "top_transactions": top_transactions}
+
+    # Преобразуем словарь в JSON-строку
+    json_response = json.dumps(response, ensure_ascii=False, indent=4)
+
+    return json_response
+
+
+if __name__ == "__main__":
+    result_json = form_main_page_info("2021-12-17 14:52:09", return_json=True)
+    print(result_json)

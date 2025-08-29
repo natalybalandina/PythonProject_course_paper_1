@@ -1,132 +1,71 @@
-from typing import Any, Dict, List
-from unittest.mock import MagicMock, patch
+import json
+import logging
+import os
+import unittest
+from unittest.mock import patch
 
 import pandas as pd
-import pytest
 
-from src.views import home_page
+from src.views import form_main_page_info
 
-test_transaction = [
-    {
-        "Дата операции": "31.12.2021 16:44:00",
-        "Дата платежа": "31.12.2021",
-        "Номер карты": "*7197",
-        "Статус": "OK",
-        "Сумма операции": -160.89,
-        "Валюта операции": "RUB",
-        "Сумма платежа": -160.89,
-        "Кэшбэк": 0,
-        "Категория": "Супермаркеты",
-        "Описание": "Колхоз",
-    },
-    {
-        "Дата операции": "31.12.2021 16:42:04",
-        "Дата платежа": 0,
-        "Номер карты": "*7197",
-        "Статус": "OK",
-        "Сумма операции": -64.0,
-        "Валюта операции": "RUB",
-        "Сумма платежа": -64.0,
-        "Кэшбэк": 70,
-        "Категория": "Ж/д билеты",
-        "Описание": "Колхоз",
-    },
-]
+# Настройка логирования
+log_directory = "../logs"
+
+# Проверка на существование директории для логов
+if not os.path.exists(log_directory):
+    os.makedirs(log_directory)
+
+logger = logging.getLogger("logs")
+logger.setLevel(logging.INFO)
+
+# Проверка на наличие обработчиков, чтобы избежать дублирования
+if not logger.hasHandlers():
+    file_handler = logging.FileHandler(os.path.join(log_directory, "views.log"), encoding="utf-8")
+    file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s: %(message)s")
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
 
 
-@patch("src.views.external_api_stock")
-@patch("src.views.external_api_currency")
-def test_home_page(mock_currency: MagicMock, mock_stock: MagicMock) -> None:
-    """Тестируем функцию, которая создает заданный JSON-ответ"""
-    mock_currency.return_value = [{"currency": "USD", "rate": 103.12}, {"currency": "EUR", "rate": 106.22}]
-    mock_stock.return_value = [{"stock": "AAPL", "price": 150.12}, {"stock": "AMZN", "price": 3173.18}]
-    result = home_page(pd.DataFrame(test_transaction), "2021-12-31 14:00:00", "Добрый вечер")
-    assert result == (
-        "{\n"
-        '    "greeting": "Добрый вечер",\n'
-        '    "cards": [\n'
-        "        {\n"
-        '            "last_digits": "7197",\n'
-        '            "total_spent": 224.89,\n'
-        '            "cashback": 2.0\n'
-        "        }\n"
-        "    ],\n"
-        '    "top_transactions": [\n'
-        "        {\n"
-        '            "date": "31.12.2021",\n'
-        '            "amount": 160.89,\n'
-        '            "category": "Супермаркеты",\n'
-        '            "description": "Колхоз"\n'
-        "        },\n"
-        "        {\n"
-        '            "date": "31.12.2021",\n'
-        '            "amount": 64.0,\n'
-        '            "category": "Ж/д билеты",\n'
-        '            "description": "Колхоз"\n'
-        "        }\n"
-        "    ],\n"
-        '    "currency_rates": [\n'
-        "        {\n"
-        '            "currency": "USD",\n'
-        '            "rate": 103.12\n'
-        "        },\n"
-        "        {\n"
-        '            "currency": "EUR",\n'
-        '            "rate": 106.22\n'
-        "        }\n"
-        "    ],\n"
-        '    "stock_prices": [\n'
-        "        {\n"
-        '            "stock": "AAPL",\n'
-        '            "price": 150.12\n'
-        "        },\n"
-        "        {\n"
-        '            "stock": "AMZN",\n'
-        '            "price": 3173.18\n'
-        "        }\n"
-        "    ]\n"
-        "}"
-    )
+class TestFormMainPageInfo(unittest.TestCase):
+
+    @patch("src.views.greeting_by_time_of_day")
+    @patch("src.views.get_expenses_cards")
+    @patch("src.views.pd.read_excel")
+    def test_form_main_page_info(self, mock_read_excel, mock_get_expenses_cards, mock_greeting_by_time_of_day):
+
+        mock_read_excel.return_value = pd.DataFrame(
+            {
+                "Дата операции": ["10.12.2021 16:02:10", "15.12.2021 13:01:22", "26.12.2021 01:12:25"],
+                "Сумма платежа": [-200, -300, -150],
+                "Категория": ["Еда", "Транспорт", "Развлечения"],  # Добавьте этот столбец
+                "Описание": ["Ужин", "Такси", "Фильм"],  # И этот
+            }
+        )
+
+        # Настройка mock для get_expenses_cards, чтобы возвращал реальные данные
+        mock_get_expenses_cards.return_value = [{"cards": "1234", "amount": 100}, {"cards": "6789", "amount": 200}]
+
+        # Настройка mock для greeting_by_time_of_day
+        mock_greeting_by_time_of_day.return_value = "Добрый день"
+
+        # Вызываем тестируемую функцию
+        result_data = form_main_page_info("2021-12-25 14:52:20")  # Или ваш тестовый параметр
+        # Проверяем результаты
+        self.assertEqual(result_data["greeting"], "Добрый день")
+        self.assertEqual(len(result_data["cards"]), 2)  # Ожидаем 2 карточки
+
+    def test_invalid_date_format(self) -> None:
+        with patch("src.views.pd.read_excel"):
+            result = form_main_page_info("invalid_date")
+            result_data = json.loads(result)
+            self.assertEqual(result_data["error"], "Некорректный формат даты.")
+
+    def test_read_excel_error(self) -> None:
+        with patch("src.views.pd.read_excel", side_effect=FileNotFoundError):
+            result = form_main_page_info("2021-12-17 14:52:20")
+            result_data = json.loads(result)
+            self.assertEqual(result_data["error"], "Не удалось прочитать данные.")
 
 
-@patch("src.views.external_api_stock")
-@patch("src.views.external_api_currency")
-def test_home_page_empty(mock_currency: MagicMock, mock_stock: MagicMock) -> None:
-    """Тестируем работу функции, когда транзакций в заданный период не найдено"""
-    mock_currency.return_value = [{"currency": "USD", "rate": 103.12}, {"currency": "EUR", "rate": 106.22}]
-    mock_stock.return_value = [{"stock": "AAPL", "price": 150.12}, {"stock": "AMZN", "price": 3173.18}]
-    result = home_page(pd.DataFrame(test_transaction), "2024-12-31 14:00:00", "Добрый вечер")
-    assert result == (
-        "{\n"
-        '    "greeting": "Добрый вечер",\n'
-        '    "cards": [],\n'
-        '    "top_transactions": [],\n'
-        '    "currency_rates": [\n'
-        "        {\n"
-        '            "currency": "USD",\n'
-        '            "rate": 103.12\n'
-        "        },\n"
-        "        {\n"
-        '            "currency": "EUR",\n'
-        '            "rate": 106.22\n'
-        "        }\n"
-        "    ],\n"
-        '    "stock_prices": [\n'
-        "        {\n"
-        '            "stock": "AAPL",\n'
-        '            "price": 150.12\n'
-        "        },\n"
-        "        {\n"
-        '            "stock": "AMZN",\n'
-        '            "price": 3173.18\n'
-        "        }\n"
-        "    ]\n"
-        "}"
-    )
-
-
-def test_home_page_invalid(test_transactions: List[Dict[str, Any]]) -> None:
-    """Тестируем поведение функции, когда неверный формат даты - вызываем ошибку"""
-    with pytest.raises(ValueError) as exc_info:
-        home_page(pd.DataFrame(test_transactions), "2021.12.31 14:00:00", "Добрый вечер")
-    assert str(exc_info.value) == "Неверный формат даты и времени. Используйте YYYY-MM-DD HH:MM:SS"
+if __name__ == "__main__":
+    unittest.main()
