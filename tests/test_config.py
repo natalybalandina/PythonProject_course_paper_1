@@ -12,7 +12,7 @@ from src.config import decorator_spending_by_category, load_user_currencies, loa
 # Тестовые данные
 mock_user_settings = {"user_currencies": ["USD", "EUR"], "user_stocks": ["AAPL", "GOOGL"]}
 
-# Define a type variable for clarity
+# Определим переменную типа
 T = TypeVar("T", bound=Dict[str, Any])
 
 

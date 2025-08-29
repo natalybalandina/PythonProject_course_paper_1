@@ -184,7 +184,7 @@ def reader_transaction_excel(file_path: str) -> pd.DataFrame:
         return df_transactions
     except FileNotFoundError:
         logger.info(f"Файл {file_path} не найден")
-        raise FileNotFoundError("Файл не найден") from None  # Переподнятие с новым сообщением
+        raise FileNotFoundError("Файл не найден") from None
 
 
 def get_currency_rates(user_currencies: list) -> list:
@@ -192,7 +192,7 @@ def get_currency_rates(user_currencies: list) -> list:
     logger.info("Поиск курсов валют")
 
     result_currencies: list[Any] = []
-    api_key = os.environ.get("API_KEY")  # Получите ваш API ключ из переменных окружения
+    api_key = os.environ.get("API_KEY")  # Получаем API ключ из переменных окружения
 
     # Проверка наличия API ключа
     if not api_key:

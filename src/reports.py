@@ -53,7 +53,7 @@ def spending_by_category(transactions: pd.DataFrame, category: str, date: Option
         date_end = date_end_temp  # Присваиваем только если дата корректна
 
     # Начальная дата - 90 дней назад от конечной даты
-    if date_end is not None:  # Убедитесь, что date_end не None
+    if date_end is not None:
         date_start = date_end - pd.Timedelta(days=90)
     else:
         raise ValueError("date_end должен быть корректной временной меткой.")
