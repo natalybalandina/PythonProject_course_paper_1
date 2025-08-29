@@ -1,200 +1,260 @@
-import json
+import datetime as dt
 import logging
 import os
-from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 import requests
-
 from dotenv import load_dotenv
 
-base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-path_file_settings = os.path.join(base_dir, "data", "user_settings.json")
-path_file_log = os.path.join(base_dir, "logs", "utils.log")
+from src.config import DATA_DIR
 
+load_dotenv("..\\.env")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+file_path = DATA_DIR / "operations.xlsx"
+
+log_directory = "../logs"
+if not os.path.exists(log_directory):
+    os.makedirs(log_directory)
+
+logger = logging.getLogger(__name__)
+file_handler = logging.FileHandler(os.path.join(log_directory, "utils.log"), encoding="utf-8")
 logging.basicConfig(
-    level=logging.INFO,
-    filename=path_file_log,
-    filemode="w",
-    format="%(asctime)s %(name)s %(levelname)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    encoding="utf-8",
+    level=logging.DEBUG,
+    format="%(asctime)s - %(filename)s - %(levelname)s - %(message)s",
+    handlers=[file_handler],
 )
-read_exel_logger = logging.getLogger("read_exel")
-greeting_logger = logging.getLogger("greeting")
-analyzes_expenses_logger = logging.getLogger("analyzes_expenses")
-filtered_transactions_logger = logging.getLogger("filtered_transactions")
-top_transactions_logger = logging.getLogger("top_transactions")
-external_api_currency_logger = logging.getLogger("external_api_currency")
-external_api_stock_logger = logging.getLogger("external_api_stock")
-
-with open(path_file_settings) as f:
-    settings = json.load(f)
-user_currencies = settings["user_currencies"]
-user_stocks = settings["user_stocks"]
-
-load_dotenv()
-API_KEY = os.getenv("API_KEY")
-Base_URL = os.getenv("Base_URL")
-API = os.getenv("API")
 
 
-def get_read_excel(path_file_excel: str) -> List[Dict[str, Any]]:
-    """Функция чтения EXCEL-файла"""
-    try:
-        read_exel_logger.info("Функция чтения EXCEL-файла начала работу")
-        df_xls = pd.read_excel(path_file_excel)
-        df_xls.fillna(0, inplace=True)
-        dict_read_excel = df_xls.to_dict(orient="records")
-        read_exel_logger.info("Файл успешно прочитан")
-        return dict_read_excel
-    except Exception as e:
-        read_exel_logger.error(f"Error: {e}", exc_info=True)
-        print(type(e).__name__)
-        return []
-    finally:
-        read_exel_logger.info("Функция чтения EXCEL-файла завершила работу")
-
-
-def get_greeting(current_time: datetime) -> str:
-    """Функция возвращает приветствие в зависимости от времени суток."""
-    greeting_logger.info("Функция формирования строки приветствия начала работу")
-    if current_time.hour < 6:
-        return "Доброй ночи"
-    elif 6 <= current_time.hour < 12:
+def greeting_by_time_of_day() -> str:
+    """Функция-приветствие"""
+    hour = dt.datetime.now().hour
+    if 4 <= hour < 12:
         return "Доброе утро"
-    elif 12 <= current_time.hour < 18:
+    elif 12 <= hour < 17:
         return "Добрый день"
-    else:
+    elif 17 <= hour < 22:
         return "Добрый вечер"
+    else:
+        return "Доброй ночи"
 
 
-def analyzes_expenses(transactions: pd.DataFrame) -> List[Dict[str, Any]]:
-    """Функция возвращает общую сумму расходов и размер кэшбэка по каждой карте за указанный период."""
-    analyzes_expenses_logger.info("Функция 'analyzes_expenses' начала работу")
+def get_data(data: str) -> Tuple[datetime, datetime]:
+    """Функция преобразования даты"""
+    logger.info(f"Получена строка даты: {data}")
     try:
-        filtered_by_card = transactions.groupby(transactions["Номер карты"].str[-4:])
-        result_df = (
-            filtered_by_card.agg(
-                total_spent=("Сумма операции", lambda x: round(abs(x.sum()), 2)),
-                cashback=("Сумма операции", lambda x: abs(x.sum()) // 100),
-            )
-            .reset_index()
-            .rename(columns={"Номер карты": "last_digits"})
-        )
-        analyzes_expenses_logger.info(
-            "Возвращаем общую сумму расходов и размер кэшбэка по каждой карте" " за указанный период"
-        )
-        return result_df.to_dict(orient="records")
-    except Exception as e:
-        analyzes_expenses_logger.error(f"Error: {e}", exc_info=True)
-        print(type(e).__name__)
+        data_obj = datetime.strptime(data, "%d.%m.%Y %H:%M:%S")
+        logger.info(f"Преобразована в объект datetime: {data_obj}")
+        start_date = data_obj.replace(day=1, hour=0, minute=0, second=0)
+        fin_date = data_obj
+        return start_date, fin_date
+    except ValueError as e:
+        logger.error(f"Ошибка преобразования даты: {e}")
+        raise e
+
+
+def top_transaction(df_transactions: pd.DataFrame) -> List[Dict[str, Any]]:
+    """Функция вывода топ 5 транзакций по сумме платежа."""
+    logger.info("Начало работы функции top_transaction")
+
+    df_transactions.loc[:, "Дата операции"] = pd.to_datetime(
+        df_transactions["Дата операции"], dayfirst=True, errors="coerce"
+    )
+
+    df_transactions = df_transactions.dropna(subset=["Дата операции"])
+
+    if "Сумма платежа" not in df_transactions.columns:
+        logger.error("Столбец 'Сумма платежа' отсутствует в данных.")
         return []
-    finally:
-        analyzes_expenses_logger.info("Функция 'analyzes_expenses' завершила работу")
+
+    df_transactions["Сумма платежа"] = pd.to_numeric(df_transactions["Сумма платежа"], errors="coerce")
+    df_transactions = df_transactions.dropna(subset=["Сумма платежа"])
+
+    top_transactions = df_transactions.sort_values(by="Сумма платежа", ascending=False).head(5)
+    logger.info("Получен топ 5 транзакций по сумме платежа")
+
+    result_top_transaction = top_transactions.to_dict(orient="records")
+    top_transaction_list = []
+
+    for transaction in result_top_transaction:
+        if isinstance(transaction["Дата операции"], dt.datetime):
+            top_transaction_list.append(
+                {
+                    "date": transaction["Дата операции"].strftime("%d.%m.%Y"),
+                    "amount": transaction["Сумма платежа"],  # Здесь сохраняем сумму
+                    "category": transaction["Категория"],
+                    "description": transaction["Описание"],
+                }
+            )
+        else:
+            logger.warning(f"Неверный формат даты: {transaction['Дата операции']}")
+
+    logger.info("Сформирован список топ 5 транзакций")
+
+    return top_transaction_list
 
 
-def get_filtered_transactions(transactions: pd.DataFrame, date_obj: datetime, start_date: datetime) -> pd.DataFrame:
-    """Функция фильтрует полученный DataFrame по дате и статусу операции и принимает во внимание только расходы"""
-    filtered_transactions_logger.info("Функция 'get_filtered_transactions' начала работу")
-    try:
-        transactions["Дата операции"] = pd.to_datetime(transactions["Дата операции"], dayfirst=True).dt.normalize()
-        filtered_transactions = transactions[
-            (transactions["Дата операции"] >= start_date) & (transactions["Дата операции"] <= date_obj)
-        ]
-        filtered_by_status = filtered_transactions[
-            (filtered_transactions["Статус"] == "OK") & (filtered_transactions["Сумма операции"] <= 0)
-        ]
-        if filtered_by_status.empty:
-            filtered_transactions_logger.info("Нет расходов за выбранный период.")
-            print("Нет расходов за выбранный период.")
-            return pd.DataFrame()
-        filtered_transactions_logger.info("Выполнили отбор транзакций за выбранный период")
-        return filtered_by_status
-    except Exception as e:
-        filtered_transactions_logger.error(f"Error: {e}", exc_info=True)
-        print(type(e).__name__)
-        return pd.DataFrame()
-    finally:
-        filtered_transactions_logger.info("Функция 'get_filtered_transactions' завершила работу")
+def get_expenses_cards(df_transactions: pd.DataFrame) -> List[Dict[str, Any]]:
+    """Функция, возвращающая расходы по каждой карте"""
+    logger.info("Начало выполнения функции get_expenses_cards")
 
+    # Фильтруем расходы только на платежи
+    filtered_expenses = df_transactions[df_transactions["Сумма платежа"] < 0]
 
-def top_transactions(transactions: pd.DataFrame) -> List[Dict[Any, Any]]:
-    """Функция возвращает список словарей с Топ-5 транзакциями по сумме платежа."""
-    top_transactions_logger.info("Функция 'top_transactions' начала работу")
-    try:
-        transactions["Дата операции"] = transactions["Дата операции"].dt.strftime("%d.%m.%Y")
-        transactions["Сумма операции"] = abs(transactions["Сумма операции"])
-        selected_transactions = transactions[["Дата операции", "Сумма операции", "Категория", "Описание"]]
-        selected_transactions = selected_transactions.sort_values("Сумма операции", ascending=False)[0:5]
-        selected_transactions = selected_transactions.rename(
-            columns={
-                "Дата операции": "date",
-                "Сумма операции": "amount",
-                "Категория": "category",
-                "Описание": "description",
+    # Группировка и суммирование расходов
+    cards_dict = (
+        filtered_expenses.loc[filtered_expenses["Сумма платежа"] < 0]
+        .groupby(by="Номер карты")["Сумма платежа"]
+        .sum()
+        .to_dict()
+    )
+    logger.debug(f"Получен словарь расходов по картам: {cards_dict}")
+
+    expenses_cards = []
+    for card, expenses in cards_dict.items():
+        expenses_cards.append(
+            {
+                "last_digits": card[-4:],
+                "total_spent": round(abs(expenses), 2),
+                "cashback": round(abs(expenses) * 0.01, 2),  # Расчет кэшбэка
             }
         )
-        top_transactions_logger.info("Возвращаем список словарей с Топ-5 транзакциями по сумме платежа.")
-        return selected_transactions.to_dict(orient="records")
+        logger.info(f"Добавлен расход по карте {card}: {abs(expenses)}")
+
+    # Добавлено: Проверка на уникальность карт
+    unique_cards = {card[-4:] for card in cards_dict.keys()}
+    logger.info(f"Уникальные карты: {unique_cards}")
+
+    # Обновлено: Возвращаем только уникальные карты
+    expenses_cards = [card for card in expenses_cards if card["last_digits"] in unique_cards]
+
+    logger.info("Завершение выполнения функции get_expenses_cards")
+    return expenses_cards
+
+
+def get_dict_transaction(file_path: str) -> list[dict]:
+    """Функция преобразовывающая датафрейм в словарь Python"""
+    if not os.path.isfile(file_path):
+        logger.error(f"Файл не найден: {file_path}")
+        raise FileNotFoundError(f"Файл не найден: {file_path}")
+    logger.info(f"Вызвана функция get_dict_transaction с файлом {file_path}")
+    try:
+        df = pd.read_excel(file_path)
+        logger.info(f"Файл {file_path} прочитан")
+        dict_transaction = df.to_dict(orient="records")
+        logger.info("Датафрейм преобразован в список словарей")
+        return dict_transaction
     except Exception as e:
-        top_transactions_logger.error(f"Error: {e}", exc_info=True)
-        print(type(e).__name__)
-        return []
-    finally:
-        top_transactions_logger.info("Функция 'top_transactions' завершила работу")
+        logger.error(f"Произошла ошибка: {str(e)}")
+        raise
 
 
-def external_api_currency() -> List[Dict[str, Any]]:
-    """Функция выполняет обращение к внешнему API для получения текущего курса валют."""
-    external_api_currency_logger.info("Функция получения текущего курса валют начала работу")
-    result_list = []
-    headers = {"apikey": API_KEY}
+if __name__ == "__main__":
     try:
-        for i in user_currencies:
-            url = f"https://api.apilayer.com/exchangerates_data/convert?to=RUB&from={i}&amount=1"
-            response = requests.get(url, headers=headers)
-            status_code = response.status_code
-            if status_code == 200:
-                result = {"currency": i, "rate": round(response.json()["info"]["rate"], 2)}
-                result_list.append(result)
-            else:
-                external_api_currency_logger.info(
-                    f"Код статуса ответа на запрос для получения текущего курса валют " f"{status_code}"
-                )
-        return result_list
-    except requests.exceptions.RequestException as e:
-        external_api_currency_logger.error(f"Запрос для получения текущего курса валют завершился ошибкой: {str(e)}")
-        print(f"Запрос для получения текущего курса валют завершился ошибкой: {str(e)}")
-        return []
-    finally:
-        external_api_currency_logger.info("Функция получения текущего курса валют завершила работу")
+        dict_transaction = get_dict_transaction(str(file_path))
+        print(dict_transaction)
+    except FileNotFoundError as e:
+        logger.error(e)
 
 
-def external_api_stock() -> List[Dict[str, Any]]:
-    """Функция выполняет обращение к внешнему API для получения цен на акции"""
-    external_api_stock_logger.info("Функция получения цен на акции начала работу")
-    result_list = []
-    end_date = datetime.now().date() - timedelta(days=1)
-    start_date = end_date - timedelta(days=2)
-    headers = {"apikey": API}
+def transaction_currency(df_transactions: pd.DataFrame, data: str) -> pd.DataFrame:
+    """Функция, формирующая расходы в заданном интервале"""
+    logger.info(f"Вызвана функция transaction_currency с аргументами: data={data}")
+    start_date, fin_date = get_data(data)  # Распаковка значений
+    logger.debug(f"Получены начальная дата: {start_date}, конечная дата: {fin_date}")
+
+    transaction_currency = df_transactions.loc[
+        (pd.to_datetime(df_transactions["Дата операции"], dayfirst=True) <= fin_date)
+        & (pd.to_datetime(df_transactions["Дата операции"], dayfirst=True) >= start_date)
+    ]
+    logger.info(f"Получен DataFrame transaction_currency: {transaction_currency}")
+
+    return transaction_currency if not transaction_currency.empty else pd.DataFrame(columns=df_transactions.columns)
+
+
+def reader_transaction_excel(file_path: str) -> pd.DataFrame:
+    """Функция принимает на вход путь до файла и возвращает датафрейм"""
+    logger.info(f"Вызвана функция получения транзакций из файла {file_path}")
     try:
-        for i in user_stocks:
-            url = f"https://api.polygon.io/v2/aggs/ticker/{i}/range/1/day/{start_date}/{end_date}?apiKey={API}"
-            response = requests.get(url, headers=headers)
-            status_code = response.status_code
-            if status_code == 200:
-                result = {"stock": i, "price": round(response.json()["results"][0]["c"], 2)}
-                result_list.append(result)
-            else:
-                external_api_stock_logger.info(
-                    f"Код статуса ответа на запрос для получения цен на акции {status_code}"
-                )
-        return result_list
-    except requests.exceptions.RequestException as e:
-        external_api_stock_logger.error(f"Запрос для получения цен на акции завершился ошибкой: {str(e)}")
-        print(f"Запрос для получения цен на акции завершился ошибкой: {str(e)}")
+        df_transactions = pd.read_excel(file_path)
+        logger.info(f"Файл {file_path} найден, данные о транзакциях получены")
+
+        return df_transactions
+    except FileNotFoundError:
+        logger.info(f"Файл {file_path} не найден")
+        raise FileNotFoundError("Файл не найден") from None
+
+
+def get_currency_rates(user_currencies: list) -> list:
+    """Возвращает курсы валют относительно RUB."""
+    logger.info("Поиск курсов валют")
+
+    result_currencies: list[Any] = []
+    api_key = os.environ.get("API_KEY")  # Получаем API ключ из переменных окружения
+
+    # Проверка наличия API ключа
+    if not api_key:
+        logger.error("API ключ отсутствует. Убедитесь, что он установлен в переменных окружения.")
         return []
-    finally:
-        external_api_stock_logger.info("Функция получения цен на акции завершила работу")
+
+    # Получаем курс всех валют относительно USD
+
+    response = requests.get(f"https://openexchangerates.org/api/latest.json?app_id={api_key}&base=USD")
+    # Проверка успешности запроса
+    if response.status_code != 200:
+        logger.error("Ошибка при получении данных с API: %s", response.text)
+        return []
+
+    # Извлечение данных из ответа
+    data = response.json()
+
+    # Получаем курс USD к RUB
+    rub_to_usd = data["rates"].get("RUB")
+
+    # Список для хранения результатов
+    result_currencies = []
+
+    # Добавляем курс USD к RUB в результаты
+    if rub_to_usd is not None:
+        result_currencies.append({"currency": "USD", "rate": round(rub_to_usd, 2)})
+
+    # Обрабатываем все запрашиваемые валюты
+    for currency in user_currencies:
+        if currency == "USD":
+            continue  # USD уже добавлен
+        elif currency in data["rates"]:
+            currency_to_usd = data["rates"][currency]
+            # Конвертируем валюту к RUB
+            currency_to_rub = round(((1 / currency_to_usd) * rub_to_usd), 2) if rub_to_usd else None
+            result_currencies.append({"currency": currency, "rate": currency_to_rub})
+
+    return result_currencies
+
+
+def get_stock_price(user_stocks: list) -> list[dict]:
+    """Функция, возвращающая курсы акций"""
+    logger.info("Вызвана функция возвращающая курсы акций")
+
+    api_key_stock = os.environ.get("API_KEY_STOCK")
+    stock_price = []
+
+    for stock in user_stocks:
+        url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={stock}&apikey={api_key_stock}"
+        response = requests.get(url)
+
+        if response.status_code != 200:
+            logger.error(f"Запрос не был успешным. Возможная причина: {response.reason}")
+            continue  # Пропускаем неуспешные запросы
+
+        data_ = response.json()
+        if "Global Quote" not in data_ or not data_["Global Quote"]:
+            logger.error(f"Нет данных о цене для акции {stock}. Ответ: {data_}")
+            continue  # Пропускаем акции без данных
+
+        price = round(float(data_["Global Quote"]["05. price"]), 2)
+        stock_price.append({"stock": stock, "price": price})
+
+    logger.info("Функция завершила свою работу")
+    return stock_price

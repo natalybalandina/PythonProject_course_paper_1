@@ -1,90 +1,108 @@
 import json
 import logging
 import os
-from collections.abc import Callable
-from datetime import datetime, timedelta
-from functools import wraps
-from typing import Any, Optional
+from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
-from src.utils import get_filtered_transactions
+from src.config import decorator_spending_by_category
+from src.utils import get_dict_transaction
 
-base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-path_file_report = os.path.join(base_dir, "reports", "my_report.json")
-path_log_file = os.path.join(base_dir, "logs", "reports.log")
+# Определяем пути
+PROJECT_ROOT = Path(__file__).resolve().parent.parent  # Выйти на уровень выше, чтобы достичь корня
+DATA_DIR = PROJECT_ROOT / "data"  # Путь к директории с данными
+file_path = DATA_DIR / "operations.xlsx"  # Путь к вашему файлу Excel
 
+# Проверка пути
+print(f"Путь к файлу: {file_path}")  # Выводим путь для отладки
+
+# Проверка и создание директории для логов, если она не существует
+log_directory = PROJECT_ROOT / "logs"
+os.makedirs(log_directory, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(filename)s - %(levelname)s - %(message)s",
+    filename=os.path.join(log_directory, "reports.log"),
+    filemode="w",
+)
 logger = logging.getLogger(__name__)
-file_handler = logging.FileHandler(path_log_file, "w", encoding="utf-8")
-file_formatter = logging.Formatter("%(asctime)s %(levelname)s: %(message)s")
-file_handler.setFormatter(file_formatter)
-logger.addHandler(file_handler)
-logger.setLevel(logging.INFO)
+
+spending_by_category_logger = logging.getLogger()
 
 
-def reports_decorator(filename: Optional[str] = None) -> Callable:
-    """Декоратор для функций-отчетов, записывающий результат в файл,
-    filename - имя файла для записи отчета. Если None, используется имя по умолчанию."""
+@decorator_spending_by_category(report_filename="custom_report.json")
+def spending_by_category(transactions: pd.DataFrame, category: str, date: Optional[str] = None) -> str:
+    """Функция возвращающая траты за последние 90 дней по заданной категории."""
 
-    def my_decorator(func: Any) -> Any:
-        @wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            nonlocal filename
-            try:
-                result = func(*args, **kwargs)
-                if filename is None:
-                    logger.info("Создаем директорию для отчета и формируем имя файла")
-                    file_name = f"{func.__name__}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-                    filename = os.path.join(base_dir, "reports", file_name)
-                    os.makedirs(os.path.dirname(filename), exist_ok=True)
-                logger.info(f"Записываем результат работы функции {func.__name__} в файл")
-                with open(filename, "w", encoding="utf-8") as file:
-                    json.dump(result.to_dict(orient="records"), file, ensure_ascii=False, indent=4)
-                logger.info(f"Данные успешно записаны в файл: {filename}")
-                print(f"Данные успешно записаны в файл: {filename}")
-                return result
-            except TypeError as error:
-                logger.error(f"Данные не были записаны в файл,ошибка {error.__class__.__name__}", exc_info=True)
-                print(f"Данные не были записаны в файл из-за ошибки {error.__class__.__name__}")
+    logger.info(f"Запуск функции spending_by_category для категории: {category} и даты: {date}")
 
-        return wrapper
+    final_list = []
 
-    return my_decorator
-
-
-@reports_decorator(filename=path_file_report)
-def spending_by_category(transactions: pd.DataFrame, category: str, date: Optional[str] = None) -> pd.DataFrame:
-    """Функция возвращает траты по заданной категории за последние три месяца (от переданной даты)."""
-    logger.info(f"Функция {__name__} начала работу")
+    # Определяем конечную дату
     if date is None:
-        date_obj = datetime.now()
+        date_end = pd.Timestamp.now()  # Используем Pandas Timestamp для согласованности
+        logger.info("Дата окончания не указана, используется текущая дата.")
     else:
-        try:
-            date_obj = datetime.strptime(date, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            logger.info("Введен неверный формат даты.")
-            raise ValueError("Неверный формат даты и времени. Используйте YYYY-MM-DD HH:MM:SS")
-    try:
-        start_date = date_obj - timedelta(days=90)
-        logger.info("Фильтруем совершенные расходы за последние три месяца от переданной даты")
-        filtered_transactions = get_filtered_transactions(transactions, date_obj, start_date)
-        if filtered_transactions.empty:
-            logger.info("Нет расходов за выбранный период.")
-            return pd.DataFrame()
-        filtered_transactions["Дата операции"] = filtered_transactions["Дата операции"].dt.strftime("%d.%m.%Y")
-        result_transactions = pd.DataFrame(
-            filtered_transactions[(filtered_transactions["Категория"].str.upper() == category.upper())]
-        )
-        if result_transactions.empty:
-            logger.info(f"По категории '{category}' за выбранный период не было расходов.")
-            print(f"По категории '{category}' за выбранный период не было расходов.")
-            return pd.DataFrame()
-        result_transactions = result_transactions[["Дата операции", "Категория", "Сумма операции", "Описание"]]
-        return result_transactions
-    except Exception as e:
-        print(type(e).__name__)
-        logger.error(f"Возникла ошибка {e}", exc_info=True)
-        return pd.DataFrame()
-    finally:
-        logger.info(f"Функция {__name__} завершила работу")
+        # Преобразуем дату и проверяем на NaT
+        date_end_temp = pd.to_datetime(date, format="%d.%m.%Y %H:%M:%S", errors="coerce")  # Преобразуем дату
+        if pd.isna(date_end_temp):  # Проверяем на NaT
+            logger.error(f"Неверный формат даты: {date}")
+            raise ValueError(f"Неверный формат даты: {date}")
+        date_end = date_end_temp  # Присваиваем только если дата корректна
 
+    # Начальная дата - 90 дней назад от конечной даты
+    if date_end is not None:
+        date_start = date_end - pd.Timedelta(days=90)
+    else:
+        raise ValueError("date_end должен быть корректной временной меткой.")
+
+    # Преобразуем даты операций и удаляем записи без дат
+    transactions["Дата операции"] = pd.to_datetime(
+        transactions["Дата операции"], format="%d.%m.%Y %H:%M:%S", errors="coerce"
+    )
+
+    # Приводим тип к Timestamp
+    transactions["Дата операции"] = transactions["Дата операции"].astype("datetime64[ns]")
+
+    # Удаляем записи с NaT
+    transactions = transactions.dropna(subset=["Дата операции"])
+
+    filtered_transactions = transactions[
+        (transactions["Категория"] == category)
+        & (pd.notna(transactions["Дата операции"]) & transactions["Дата операции"].between(date_start, date_end))
+        & (transactions["Сумма операции с округлением"] > 0)
+    ]
+
+    logger.info(
+        f"Найдено {len(filtered_transactions)} транзакций для категории '{category}' "
+        f"за период с {date_start} по {date_end}."
+    )
+
+    # Формируем результирующий список
+    for _, transaction in filtered_transactions.iterrows():
+        final_list.append(
+            {
+                "date": transaction["Дата операции"].strftime("%d.%m.%Y %H:%M:%S"),
+                "amount": transaction["Сумма операции с округлением"],
+            }
+        )
+
+    logger.info(f"Возвращаемый результат: {json.dumps(final_list, indent=4, ensure_ascii=False)}")
+
+    # Возвращаем результат в формате JSON
+    return json.dumps(final_list, indent=4, ensure_ascii=False)
+
+
+if __name__ == "__main__":
+    try:
+        f = pd.DataFrame(get_dict_transaction(str(file_path)))
+        logger.info(f"Загруженные данные: \n{f}")  # Логируем загруженные данные
+        result = spending_by_category(f, "Фастфуд", "17.12.2021 16:28:23")
+        logger.info(f"Результат выполнения: {result}")
+        print(result)
+    except FileNotFoundError as e:
+        logger.error("Файл не найден: %s", e)
+    except Exception as e:  # Ловим все остальные ошибки
+        logger.error("Произошла ошибка: %s", e)

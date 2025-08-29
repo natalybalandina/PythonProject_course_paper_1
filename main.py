@@ -4,6 +4,7 @@ from src.services import get_transactions_ind
 from src.utils import get_dict_transaction, reader_transaction_excel
 from src.views import create_json_response, get_expenses_cards, greeting_by_time_of_day, top_transaction
 
+
 def main() -> None:
     # 1. Получение текущего времени и приветствия
     greeting = greeting_by_time_of_day()
@@ -33,7 +34,7 @@ def main() -> None:
     print(json_response)
 
     # 8. Остаток по счету (пример функции, требующей дополнительной реализации)
-    account_balance = 1000  # Это число должно быть получено из ваших данных
+    account_balance = 1000  # Это число должно быть получено из данных о транзакциях
     print(f"У вас на счету: {account_balance} рублей.")
 
     # 9. Кешбэк (пример функции, требующей дополнительной реализации)
@@ -50,6 +51,7 @@ def main() -> None:
     category_expenses = spending_by_category(transactions_df, category)
     print(f"Расходы по категории '{category}' за последние 3 месяца:")
     print(category_expenses)
+
 
 if __name__ == "__main__":
     main()
